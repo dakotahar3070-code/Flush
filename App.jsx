@@ -37,8 +37,8 @@ const loadState = () => {
         type: "public",
         description: "Spacious and clean.",
         createdByUserId: null,
-        lat: null,
-        lng: null,
+        lat: 40.785091,
+        lng: -73.968285,
         createdAt: now,
         isHidden: false,
       },
@@ -49,8 +49,8 @@ const loadState = () => {
         type: "cafe",
         description: "Moderate cleanliness.",
         createdByUserId: null,
-        lat: null,
-        lng: null,
+        lat: 40.754932,
+        lng: -73.984016,
         createdAt: now,
         isHidden: false,
       }
@@ -120,12 +120,166 @@ const addReview = (newReview, photoDataUrls) => {
   saveState(state);
 };
 
-// ===== UI Helpers =====
+// ===== Utilities =====
 
-const BathroomCard = ({ bathroom, reviews, photos, onSelect }) => {
+// Haversine distance in miles
+const distanceMiles = (lat1, lng1, lat2, lng2) => {
+  const toRadians = (degrees) => (degrees * Math.PI) / 180;
+  const R = 3958.8;
+  const dLat = toRadians(lat2 - lat1);
+  const dLng = toRadians(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRadians(lat1)) *
+      Math.cos(toRadians(lat2)) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
+
+// Simple normalized map space (NYC-ish bounds)
+const MAP_LAT_RANGE = { min: 40.700, max: 40.800 };
+const MAP_LNG_RANGE = { min: -74.000, max: -73.900 };
+
+const normalizeCoordinates = (lat, lng) => {
+  const x =
+    ((lng - MAP_LNG_RANGE.min) / (MAP_LNG_RANGE.max - MAP_LNG_RANGE.min)) *
+    100;
+  const y =
+    ((MAP_LAT_RANGE.max - lat) /
+      (MAP_LAT_RANGE.max - MAP_LAT_RANGE.min)) *
+    100;
+  return { x, y };
+};
+
+// ===== Map Styling =====
+
+const mapBackgroundStyle = {
+  backgroundImage:
+    "linear-gradient(#f5f7fa 1px, transparent 1px), linear-gradient(90deg, #f5f7fa 1px, transparent 1px)",
+  backgroundSize: "20px 20px",
+  backgroundColor: "#e3edf7",
+};
+
+// ===== UI Components =====
+
+const BathroomPinColors = {
+  public: "blue",
+  cafe: "green",
+  hotel: "orange",
+  gas_station: "red",
+  other: "purple",
+};
+
+const MapView = ({ bathrooms, userLocation, onSelect }) => {
+  return (
+    <div
+      style={{
+        position: "relative",
+        width: "100%",
+        height: 400,
+        border: "1px solid #ccc",
+        borderRadius: 8,
+        overflow: "hidden",
+        ...mapBackgroundStyle,
+      }}
+    >
+      {userLocation && (
+        <div
+          style={{
+            position: "absolute",
+            ...normalizeCoordinates(userLocation.lat, userLocation.lng),
+            top: `${normalizeCoordinates(userLocation.lat, userLocation.lng).y}%`,
+            left: `${normalizeCoordinates(userLocation.lat, userLocation.lng).x}%`,
+            width: 14,
+            height: 14,
+            backgroundColor: "teal",
+            borderRadius: "50%",
+            border: "2px solid white",
+            transform: "translate(-50%, -50%)",
+          }}
+          title="You are here"
+        />
+      )}
+
+      {bathrooms.map((bathroom) => {
+        if (!bathroom.lat || !bathroom.lng) return null;
+        const coords = normalizeCoordinates(bathroom.lat, bathroom.lng);
+        const pinColor = BathroomPinColors[bathroom.type] || "gray";
+
+        return (
+          <div
+            key={bathroom.id}
+            title={bathroom.name}
+            style={{
+              position: "absolute",
+              top: `${coords.y}%`,
+              left: `${coords.x}%`,
+              width: 16,
+              height: 16,
+              backgroundColor: pinColor,
+              borderRadius: "50%",
+              border: "2px solid white",
+              transform: "translate(-50%, -50%)",
+              cursor: "pointer",
+              boxShadow: "0 0 4px rgba(0,0,0,0.3)",
+            }}
+            onClick={() => onSelect(bathroom)}
+          />
+        );
+      })}
+    </div>
+  );
+};
+
+const MiniMap = ({ lat, lng }) => {
+  if (!lat || !lng) return <p>No location available</p>;
+  const coords = normalizeCoordinates(lat, lng);
+
+  return (
+    <div
+      style={{
+        position: "relative",
+        width: "100%",
+        height: 200,
+        border: "1px solid #ccc",
+        borderRadius: 8,
+        marginTop: 12,
+        ...mapBackgroundStyle,
+      }}
+    >
+      <div
+        style={{
+          position: "absolute",
+          top: `${coords.y}%`,
+          left: `${coords.x}%`,
+          width: 16,
+          height: 16,
+          backgroundColor: "blue",
+          borderRadius: "50%",
+          border: "2px solid white",
+          transform: "translate(-50%, -50%)",
+        }}
+      />
+    </div>
+  );
+};
+
+const BathroomCard = ({ bathroom, reviews, photos, userLocation, onSelect }) => {
   const avg = calculateAverageRating(bathroom.id, reviews);
   const bathroomPhotos = photos.filter((p) => p.bathroomId === bathroom.id);
   const thumbnail = bathroomPhotos[0]?.dataUrl;
+
+  const distance =
+    userLocation && bathroom.lat && bathroom.lng
+      ? distanceMiles(
+          userLocation.lat,
+          userLocation.lng,
+          bathroom.lat,
+          bathroom.lng
+        ).toFixed(1)
+      : null;
 
   return (
     <div
@@ -138,6 +292,8 @@ const BathroomCard = ({ bathroom, reviews, photos, onSelect }) => {
         display: "flex",
         gap: 10,
         cursor: "pointer",
+        borderRadius: 6,
+        background: "#fff",
       }}
     >
       {thumbnail && (
@@ -151,13 +307,21 @@ const BathroomCard = ({ bathroom, reviews, photos, onSelect }) => {
         <h3 style={{ margin: 0 }}>{bathroom.name}</h3>
         <p style={{ margin: "4px 0" }}>Type: {bathroom.type}</p>
         <p style={{ margin: "4px 0" }}>Address: {bathroom.address}</p>
+        {distance && <p style={{ margin: "4px 0" }}>{distance} miles away</p>}
         <p style={{ margin: "4px 0" }}>Average Rating: {avg}</p>
       </div>
     </div>
   );
 };
 
-const BathroomList = ({ bathrooms, reviews, photos, onSelect }) => {
+const BathroomList = ({
+  bathrooms,
+  reviews,
+  photos,
+  userLocation,
+  onRequestLocation,
+  onSelect,
+}) => {
   const [search, setSearch] = useState("");
   const [minRating, setMinRating] = useState(0);
   const [sortBy, setSortBy] = useState("name");
@@ -183,6 +347,17 @@ const BathroomList = ({ bathrooms, reviews, photos, onSelect }) => {
         const ra = parseFloat(calculateAverageRating(a.id, reviews)) || 0;
         const rb = parseFloat(calculateAverageRating(b.id, reviews)) || 0;
         return rb - ra;
+      }
+      if (sortBy === "distance" && userLocation) {
+        const da =
+          a.lat && a.lng
+            ? distanceMiles(userLocation.lat, userLocation.lng, a.lat, a.lng)
+            : Infinity;
+        const db =
+          b.lat && b.lng
+            ? distanceMiles(userLocation.lat, userLocation.lng, b.lat, b.lng)
+            : Infinity;
+        return da - db;
       }
       return 0;
     });
@@ -219,8 +394,14 @@ const BathroomList = ({ bathrooms, reviews, photos, onSelect }) => {
             <option value="name">Alphabetical</option>
             <option value="newest">Newest</option>
             <option value="rating">Highest Rated</option>
+            {userLocation && <option value="distance">Nearest to Me</option>}
           </select>
         </label>
+        {!userLocation && (
+          <button onClick={onRequestLocation} style={{ marginLeft: 8 }}>
+            Find Near Me
+          </button>
+        )}
       </div>
       {filtered.map((b) => (
         <BathroomCard
@@ -228,6 +409,7 @@ const BathroomList = ({ bathrooms, reviews, photos, onSelect }) => {
           bathroom={b}
           reviews={reviews}
           photos={photos}
+          userLocation={userLocation}
           onSelect={onSelect}
         />
       ))}
@@ -320,36 +502,6 @@ const PhotoUploader = ({ onFilesChange, maxCount = 5 }) => {
   );
 };
 
-const BathroomDetail = ({ bathroom, reviews, photos }) => {
-  const bathroomReviews = reviews.filter((r) => r.bathroomId === bathroom.id);
-  const bathroomPhotos = photos.filter((p) => p.bathroomId === bathroom.id);
-
-  return (
-    <div>
-      <h2>{bathroom.name}</h2>
-      <p>Address: {bathroom.address}</p>
-      <p>Type: {bathroom.type}</p>
-      <p>Description: {bathroom.description}</p>
-
-      {bathroomPhotos.length > 0 && (
-        <div style={{ margin: "10px 0", display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {bathroomPhotos.map((p) => (
-            <img
-              key={p.id}
-              src={p.dataUrl}
-              alt="Bathroom"
-              style={{ width: 100, height: 100, objectFit: "cover", borderRadius: 4 }}
-            />
-          ))}
-        </div>
-      )}
-
-      <h3>Reviews</h3>
-      <ReviewList reviews={bathroomReviews} photos={photos} />
-    </div>
-  );
-};
-
 const ReviewList = ({ reviews, photos }) => {
   if (reviews.length === 0) return <p>No reviews yet.</p>;
 
@@ -387,12 +539,76 @@ const ReviewList = ({ reviews, photos }) => {
   );
 };
 
-const AddBathroomForm = ({ onAdd }) => {
+const BathroomDetail = ({ bathroom, reviews, photos, userLocation }) => {
+  const bathroomReviews = reviews.filter((r) => r.bathroomId === bathroom.id);
+  const bathroomPhotos = photos.filter((p) => p.bathroomId === bathroom.id);
+
+  const distance =
+    userLocation && bathroom.lat && bathroom.lng
+      ? distanceMiles(
+          userLocation.lat,
+          userLocation.lng,
+          bathroom.lat,
+          bathroom.lng
+        ).toFixed(1)
+      : null;
+
+  return (
+    <div>
+      <h2>{bathroom.name}</h2>
+      <p>Address: {bathroom.address}</p>
+      <p>Type: {bathroom.type}</p>
+      <p>Description: {bathroom.description}</p>
+      {distance && <p>{distance} miles away</p>}
+
+      {bathroomPhotos.length > 0 && (
+        <div
+          style={{
+            margin: "10px 0",
+            display: "flex",
+            gap: 8,
+            flexWrap: "wrap",
+          }}
+        >
+          {bathroomPhotos.map((p) => (
+            <img
+              key={p.id}
+              src={p.dataUrl}
+              alt="Bathroom"
+              style={{
+                width: 100,
+                height: 100,
+                objectFit: "cover",
+                borderRadius: 4,
+              }}
+            />
+          ))}
+        </div>
+      )}
+
+      <MiniMap lat={bathroom.lat} lng={bathroom.lng} />
+
+      <h3 style={{ marginTop: 16 }}>Reviews</h3>
+      <ReviewList reviews={bathroomReviews} photos={photos} />
+    </div>
+  );
+};
+
+const AddBathroomForm = ({ onAdd, userLocation, onUseLocation }) => {
   const [name, setName] = useState("");
   const [address, setAddress] = useState("");
   const [type, setType] = useState("public");
   const [description, setDescription] = useState("");
   const [photos, setPhotos] = useState([]);
+  const [lat, setLat] = useState("");
+  const [lng, setLng] = useState("");
+
+  useEffect(() => {
+    if (userLocation) {
+      setLat(userLocation.lat.toFixed(6));
+      setLng(userLocation.lng.toFixed(6));
+    }
+  }, [userLocation]);
 
   const handleSubmit = () => {
     if (!name || !address) {
@@ -406,8 +622,8 @@ const AddBathroomForm = ({ onAdd }) => {
         type,
         description,
         createdByUserId: null,
-        lat: null,
-        lng: null,
+        lat: lat ? Number(lat) : null,
+        lng: lng ? Number(lng) : null,
       },
       photos
     );
@@ -416,6 +632,8 @@ const AddBathroomForm = ({ onAdd }) => {
     setType("public");
     setDescription("");
     setPhotos([]);
+    setLat("");
+    setLng("");
   };
 
   return (
@@ -452,6 +670,29 @@ const AddBathroomForm = ({ onAdd }) => {
         onChange={(e) => setDescription(e.target.value)}
         style={{ display: "block", marginBottom: 8, width: "100%" }}
       />
+      <div style={{ marginBottom: 8 }}>
+        <label>
+          Lat:{" "}
+          <input
+            type="text"
+            value={lat}
+            onChange={(e) => setLat(e.target.value)}
+            style={{ width: 120 }}
+          />
+        </label>{" "}
+        <label>
+          Lng:{" "}
+          <input
+            type="text"
+            value={lng}
+            onChange={(e) => setLng(e.target.value)}
+            style={{ width: 120 }}
+          />
+        </label>{" "}
+        <button type="button" onClick={onUseLocation}>
+          Use my location
+        </button>
+      </div>
       <p>Bathroom photos (up to 5):</p>
       <PhotoUploader onFilesChange={setPhotos} maxCount={5} />
       <button onClick={handleSubmit}>Add Bathroom</button>
@@ -547,12 +788,40 @@ const App = () => {
   const [state, setState] = useState(loadState());
   const [view, setView] = useState("list");
   const [selectedBathroom, setSelectedBathroom] = useState(null);
+  const [userLocation, setUserLocation] = useState(null);
+  const [locationError, setLocationError] = useState(null);
 
   useEffect(() => {
     saveState(state);
   }, [state]);
 
   const refresh = () => setState(loadState());
+
+  const handleRequestLocation = () => {
+    setLocationError(null);
+    if (!navigator.geolocation) {
+      setLocationError("Geolocation is not supported by your browser.");
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setUserLocation({
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+        });
+      },
+      (error) => {
+        setLocationError(error.message || "Unable to retrieve your location.");
+      }
+    );
+  };
+
+  const handleUseLocationInForm = () => {
+    if (!userLocation) {
+      handleRequestLocation();
+    }
+  };
 
   const handleAddBathroom = (bathroom, photos) => {
     addBathroom(bathroom, photos);
@@ -565,18 +834,25 @@ const App = () => {
   };
 
   return (
-    <div style={{ padding: 16, maxWidth: 600, margin: "0 auto" }}>
+    <div style={{ padding: 16, maxWidth: 800, margin: "0 auto" }}>
       <h1>Flush 🚽 — Yelp for Bathrooms</h1>
       <nav style={{ marginBottom: 16 }}>
         <button onClick={() => setView("list")}>List</button>{" "}
-        <button onClick={() => setView("add")}>Add Bathroom</button>
+        <button onClick={() => setView("add")}>Add Bathroom</button>{" "}
+        <button onClick={() => setView("map")}>Map</button>
       </nav>
+
+      {locationError && (
+        <p style={{ color: "red" }}>Location Error: {locationError}</p>
+      )}
 
       {view === "list" && (
         <BathroomList
           bathrooms={state.bathrooms}
           reviews={state.reviews}
           photos={state.photos}
+          userLocation={userLocation}
+          onRequestLocation={handleRequestLocation}
           onSelect={(bathroom) => {
             setSelectedBathroom(bathroom);
             setView("detail");
@@ -584,15 +860,43 @@ const App = () => {
         />
       )}
 
-      {view === "add" && <AddBathroomForm onAdd={handleAddBathroom} />}
+      {view === "add" && (
+        <AddBathroomForm
+          onAdd={handleAddBathroom}
+          userLocation={userLocation}
+          onUseLocation={handleUseLocationInForm}
+        />
+      )}
+
+      {view === "map" && (
+        <div>
+          {!userLocation && (
+            <button
+              onClick={handleRequestLocation}
+              style={{ marginBottom: 8 }}
+            >
+              Use my location
+            </button>
+          )}
+          <MapView
+            bathrooms={state.bathrooms}
+            userLocation={userLocation}
+            onSelect={(bathroom) => {
+              setSelectedBathroom(bathroom);
+              setView("detail");
+            }}
+          />
+        </div>
+      )}
 
       {view === "detail" && selectedBathroom && (
-        <div>
+        <div style={{ marginTop: 12 }}>
           <button onClick={() => setView("list")}>← Back to list</button>
           <BathroomDetail
             bathroom={selectedBathroom}
             reviews={state.reviews}
             photos={state.photos}
+            userLocation={userLocation}
           />
           <AddReviewForm
             bathroomId={selectedBathroom.id}
