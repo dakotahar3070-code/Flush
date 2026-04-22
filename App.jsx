@@ -102,6 +102,7 @@ const addReview = (newReview, photoDataUrls) => {
     id: reviewId,
     ...newReview,
     createdAt: new Date().toISOString(),
+    isHidden: false,
   };
   state.reviews.push(review);
 
@@ -152,6 +153,44 @@ const addVote = (reviewId, userId, value) => {
     });
   }
 
+  saveState(state);
+};
+
+// ===== Reporting & Moderation =====
+
+const addReport = ({ type, bathroomId, reviewId, reason, createdByUserId }) => {
+  const state = loadState();
+  state.reports.push({
+    id: generateId(),
+    type, // "bathroom" | "review"
+    bathroomId: bathroomId || null,
+    reviewId: reviewId || null,
+    reason,
+    createdByUserId,
+    createdAt: new Date().toISOString(),
+    resolved: false,
+  });
+  saveState(state);
+};
+
+const setBathroomHidden = (bathroomId, isHidden) => {
+  const state = loadState();
+  const b = state.bathrooms.find((x) => x.id === bathroomId);
+  if (b) b.isHidden = isHidden;
+  saveState(state);
+};
+
+const setReviewHidden = (reviewId, isHidden) => {
+  const state = loadState();
+  const r = state.reviews.find((x) => x.id === reviewId);
+  if (r) r.isHidden = isHidden;
+  saveState(state);
+};
+
+const resolveReport = (reportId) => {
+  const state = loadState();
+  const r = state.reports.find((x) => x.id === reportId);
+  if (r) r.resolved = true;
   saveState(state);
 };
 
@@ -300,7 +339,13 @@ const MiniMap = ({ lat, lng }) => {
   );
 };
 
-const BathroomCard = ({ bathroom, reviews, photos, userLocation, onSelect }) => {
+const BathroomCard = ({
+  bathroom,
+  reviews,
+  photos,
+  userLocation,
+  onSelect,
+}) => {
   const avg = calculateAverageRating(bathroom.id, reviews);
   const bathroomPhotos = photos.filter((p) => p.bathroomId === bathroom.id);
   const thumbnail = bathroomPhotos[0]?.dataUrl;
@@ -541,18 +586,32 @@ const ReviewList = ({
   votes,
   currentUserId,
   onVote,
+  onReportReview,
+  users,
+  isAdmin,
 }) => {
-  if (reviews.length === 0) return <p>No reviews yet.</p>;
+  const visibleReviews = isAdmin
+    ? reviews
+    : reviews.filter((r) => !r.isHidden);
+
+  if (visibleReviews.length === 0) return <p>No reviews yet.</p>;
 
   return (
     <ul style={{ paddingLeft: 16 }}>
-      {reviews.map((r) => {
+      {visibleReviews.map((r) => {
         const reviewPhotos = photos.filter((p) => p.reviewId === r.id);
         const score = calculateVoteScore(r.id, votes);
         const userVote = getUserVote(r.id, currentUserId, votes);
+        const author =
+          users.find((u) => u.id === r.userId) || null;
 
         return (
           <li key={r.id} style={{ marginBottom: 16, listStyle: "none" }}>
+            <p>
+              <strong>
+                {author ? author.name : "Anonymous"}
+              </strong>
+            </p>
             <p>Overall: {r.overallRating}</p>
             <p>Cleanliness: {r.cleanlinessRating ?? "N/A"}</p>
             <p>Accessibility: {r.accessibilityRating ?? "N/A"}</p>
@@ -579,6 +638,13 @@ const ReviewList = ({
               <span>
                 Helpful: {score >= 0 ? `+${score}` : score}
               </span>
+              <button
+                type="button"
+                onClick={() => onReportReview(r.id)}
+                style={{ marginLeft: "auto", fontSize: 12 }}
+              >
+                Report
+              </button>
             </div>
             {reviewPhotos.length > 0 && (
               <div
@@ -619,9 +685,19 @@ const BathroomDetail = ({
   userLocation,
   currentUserId,
   onVote,
+  onReportBathroom,
+  onReportReview,
+  users,
+  isAdmin,
 }) => {
-  const bathroomReviews = reviews.filter((r) => r.bathroomId === bathroom.id);
-  const bathroomPhotos = photos.filter((p) => p.bathroomId === bathroom.id);
+  const bathroomReviews = reviews.filter(
+    (r) => r.bathroomId === bathroom.id
+  );
+  const bathroomPhotos = photos.filter(
+    (p) => p.bathroomId === bathroom.id
+  );
+  const creator =
+    users.find((u) => u.id === bathroom.createdByUserId) || null;
 
   const distance =
     userLocation && bathroom.lat && bathroom.lng
@@ -635,11 +711,26 @@ const BathroomDetail = ({
 
   return (
     <div>
-      <h2>{bathroom.name}</h2>
+      <h2>
+        {bathroom.name}{" "}
+        {bathroom.isHidden && (
+          <span style={{ color: "red", fontSize: 14 }}>
+            (Hidden)
+          </span>
+        )}
+      </h2>
       <p>Address: {bathroom.address}</p>
       <p>Type: {bathroom.type}</p>
       <p>Description: {bathroom.description}</p>
+      {creator && <p>Added by: {creator.name}</p>}
       {distance && <p>{distance} miles away</p>}
+      <button
+        type="button"
+        onClick={() => onReportBathroom(bathroom.id)}
+        style={{ fontSize: 12, marginBottom: 8 }}
+      >
+        Report this bathroom
+      </button>
 
       {bathroomPhotos.length > 0 && (
         <div
@@ -675,6 +766,9 @@ const BathroomDetail = ({
         votes={votes}
         currentUserId={currentUserId}
         onVote={onVote}
+        onReportReview={onReportReview}
+        users={users}
+        isAdmin={isAdmin}
       />
     </div>
   );
@@ -707,7 +801,6 @@ const AddBathroomForm = ({ onAdd, userLocation, onUseLocation }) => {
         address,
         type,
         description,
-        createdByUserId: null,
         lat: lat ? Number(lat) : null,
         lng: lng ? Number(lng) : null,
       },
@@ -786,7 +879,7 @@ const AddBathroomForm = ({ onAdd, userLocation, onUseLocation }) => {
   );
 };
 
-const AddReviewForm = ({ bathroomId, onAdded }) => {
+const AddReviewForm = ({ bathroomId, onAdded, currentUserId }) => {
   const [overall, setOverall] = useState(5);
   const [cleanliness, setCleanliness] = useState("");
   const [accessibility, setAccessibility] = useState("");
@@ -801,7 +894,7 @@ const AddReviewForm = ({ bathroomId, onAdded }) => {
     addReview(
       {
         bathroomId,
-        userId: null,
+        userId: currentUserId,
         overallRating: Number(overall),
         cleanlinessRating: cleanliness ? Number(cleanliness) : null,
         accessibilityRating: accessibility ? Number(accessibility) : null,
@@ -868,6 +961,183 @@ const AddReviewForm = ({ bathroomId, onAdded }) => {
   );
 };
 
+// ===== Profile & Admin =====
+
+const ProfileView = ({
+  user,
+  stats,
+  onNameChange,
+  isAdmin,
+  onToggleAdmin,
+}) => {
+  const [name, setName] = useState(user?.name || "");
+
+  useEffect(() => {
+    setName(user?.name || "");
+  }, [user]);
+
+  const handleSave = () => {
+    if (!name.trim()) {
+      alert("Name cannot be empty");
+      return;
+    }
+    onNameChange(name.trim());
+  };
+
+  return (
+    <div>
+      <h2>Profile</h2>
+      <p>User ID: {user?.id}</p>
+      <p>Joined: {user?.createdAt && new Date(user.createdAt).toLocaleString()}</p>
+      <div style={{ marginTop: 8, marginBottom: 8 }}>
+        <label>
+          Display name:{" "}
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            style={{ width: 200 }}
+          />
+        </label>{" "}
+        <button type="button" onClick={handleSave}>
+          Save
+        </button>
+      </div>
+      <h3>Stats</h3>
+      <p>Bathrooms added: {stats.bathrooms}</p>
+      <p>Reviews written: {stats.reviews}</p>
+      <p>Votes cast: {stats.votes}</p>
+      <div style={{ marginTop: 12 }}>
+        <label>
+          <input
+            type="checkbox"
+            checked={isAdmin}
+            onChange={(e) => onToggleAdmin(e.target.checked)}
+          />{" "}
+          Admin mode (local only)
+        </label>
+      </div>
+    </div>
+  );
+};
+
+const AdminView = ({
+  reports,
+  bathrooms,
+  reviews,
+  users,
+  onHideBathroom,
+  onUnhideBathroom,
+  onHideReview,
+  onUnhideReview,
+  onResolve,
+}) => {
+  if (reports.length === 0) {
+    return (
+      <div>
+        <h2>Admin</h2>
+        <p>No reports.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h2>Admin</h2>
+      <h3>Reports</h3>
+      <ul style={{ paddingLeft: 16 }}>
+        {reports.map((r) => {
+          const bathroom =
+            r.bathroomId &&
+            bathrooms.find((b) => b.id === r.bathroomId);
+          const review =
+            r.reviewId && reviews.find((rev) => rev.id === r.reviewId);
+          const reporter =
+            users.find((u) => u.id === r.createdByUserId) || null;
+
+          return (
+            <li
+              key={r.id}
+              style={{ marginBottom: 12, listStyle: "none" }}
+            >
+              <p>
+                <strong>{r.type === "bathroom" ? "Bathroom" : "Review"}</strong>{" "}
+                report {r.resolved && "(resolved)"}
+              </p>
+              {bathroom && (
+                <p>
+                  Bathroom: {bathroom.name}{" "}
+                  {bathroom.isHidden && (
+                    <span style={{ color: "red" }}>(hidden)</span>
+                  )}
+                </p>
+              )}
+              {review && (
+                <p>
+                  Review:{" "}
+                  {review.text.length > 80
+                    ? review.text.slice(0, 80) + "..."
+                    : review.text}{" "}
+                  {review.isHidden && (
+                    <span style={{ color: "red" }}>(hidden)</span>
+                  )}
+                </p>
+              )}
+              <p>Reason: {r.reason || "(no reason provided)"}</p>
+              <p>
+                Reported by: {reporter ? reporter.name : "Unknown"} at{" "}
+                {new Date(r.createdAt).toLocaleString()}
+              </p>
+              <div style={{ display: "flex", gap: 8 }}>
+                {bathroom && !bathroom.isHidden && (
+                  <button
+                    type="button"
+                    onClick={() => onHideBathroom(bathroom.id)}
+                  >
+                    Hide bathroom
+                  </button>
+                )}
+                {bathroom && bathroom.isHidden && (
+                  <button
+                    type="button"
+                    onClick={() => onUnhideBathroom(bathroom.id)}
+                  >
+                    Unhide bathroom
+                  </button>
+                )}
+                {review && !review.isHidden && (
+                  <button
+                    type="button"
+                    onClick={() => onHideReview(review.id)}
+                  >
+                    Hide review
+                  </button>
+                )}
+                {review && review.isHidden && (
+                  <button
+                    type="button"
+                    onClick={() => onUnhideReview(review.id)}
+                  >
+                    Unhide review
+                  </button>
+                )}
+                {!r.resolved && (
+                  <button
+                    type="button"
+                    onClick={() => onResolve(r.id)}
+                  >
+                    Mark resolved
+                  </button>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+};
+
 // ===== App =====
 
 const getOrCreateCurrentUserId = () => {
@@ -886,6 +1156,23 @@ const App = () => {
   const [userLocation, setUserLocation] = useState(null);
   const [locationError, setLocationError] = useState(null);
   const [currentUserId] = useState(getOrCreateCurrentUserId);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    // Ensure current user exists in state.users
+    const s = loadState();
+    let user = s.users.find((u) => u.id === currentUserId);
+    if (!user) {
+      user = {
+        id: currentUserId,
+        name: "User " + currentUserId.slice(-4),
+        createdAt: new Date().toISOString(),
+      };
+      s.users.push(user);
+      saveState(s);
+    }
+    setState(s);
+  }, [currentUserId]);
 
   useEffect(() => {
     saveState(state);
@@ -920,7 +1207,13 @@ const App = () => {
   };
 
   const handleAddBathroom = (bathroom, photos) => {
-    addBathroom(bathroom, photos);
+    addBathroom(
+      {
+        ...bathroom,
+        createdByUserId: currentUserId,
+      },
+      photos
+    );
     refresh();
     setView("list");
   };
@@ -934,13 +1227,99 @@ const App = () => {
     refresh();
   };
 
+  const handleReportBathroom = (bathroomId) => {
+    const reason = window.prompt("Why are you reporting this bathroom?");
+    addReport({
+      type: "bathroom",
+      bathroomId,
+      reviewId: null,
+      reason: reason || "",
+      createdByUserId: currentUserId,
+    });
+    refresh();
+  };
+
+  const handleReportReview = (reviewId) => {
+    const reason = window.prompt("Why are you reporting this review?");
+    addReport({
+      type: "review",
+      bathroomId: null,
+      reviewId,
+      reason: reason || "",
+      createdByUserId: currentUserId,
+    });
+    refresh();
+  };
+
+  const handleNameChange = (newName) => {
+    const s = loadState();
+    const user = s.users.find((u) => u.id === currentUserId);
+    if (user) {
+      user.name = newName;
+      saveState(s);
+      setState(s);
+    }
+  };
+
+  const handleHideBathroom = (bathroomId) => {
+    setBathroomHidden(bathroomId, true);
+    refresh();
+  };
+
+  const handleUnhideBathroom = (bathroomId) => {
+    setBathroomHidden(bathroomId, false);
+    refresh();
+  };
+
+  const handleHideReview = (reviewId) => {
+    setReviewHidden(reviewId, true);
+    refresh();
+  };
+
+  const handleUnhideReview = (reviewId) => {
+    setReviewHidden(reviewId, false);
+    refresh();
+  };
+
+  const handleResolveReport = (reportId) => {
+    resolveReport(reportId);
+    refresh();
+  };
+
+  const currentUser =
+    state.users.find((u) => u.id === currentUserId) || null;
+
+  const stats = {
+    bathrooms: state.bathrooms.filter(
+      (b) => b.createdByUserId === currentUserId
+    ).length,
+    reviews: state.reviews.filter(
+      (r) => r.userId === currentUserId
+    ).length,
+    votes: state.votes.filter(
+      (v) => v.userId === currentUserId
+    ).length,
+  };
+
+  const visibleBathrooms = isAdmin
+    ? state.bathrooms
+    : state.bathrooms.filter((b) => !b.isHidden);
+
+  const unresolvedReports = state.reports.filter((r) => !r.resolved);
+
   return (
-    <div style={{ padding: 16, maxWidth: 800, margin: "0 auto" }}>
+    <div style={{ padding: 16, maxWidth: 900, margin: "0 auto" }}>
       <h1>Flush 🚽 — Yelp for Bathrooms</h1>
-      <nav style={{ marginBottom: 16 }}>
-        <button onClick={() => setView("list")}>List</button>{" "}
-        <button onClick={() => setView("add")}>Add Bathroom</button>{" "}
+      <nav style={{ marginBottom: 16, display: "flex", gap: 8 }}>
+        <button onClick={() => setView("list")}>List</button>
+        <button onClick={() => setView("add")}>Add Bathroom</button>
         <button onClick={() => setView("map")}>Map</button>
+        <button onClick={() => setView("profile")}>Profile</button>
+        {isAdmin && (
+          <button onClick={() => setView("admin")}>
+            Admin {unresolvedReports.length > 0 && `(${unresolvedReports.length})`}
+          </button>
+        )}
       </nav>
 
       {locationError && (
@@ -949,7 +1328,7 @@ const App = () => {
 
       {view === "list" && (
         <BathroomList
-          bathrooms={state.bathrooms}
+          bathrooms={visibleBathrooms}
           reviews={state.reviews}
           photos={state.photos}
           userLocation={userLocation}
@@ -980,7 +1359,7 @@ const App = () => {
             </button>
           )}
           <MapView
-            bathrooms={state.bathrooms}
+            bathrooms={visibleBathrooms}
             userLocation={userLocation}
             onSelect={(bathroom) => {
               setSelectedBathroom(bathroom);
@@ -1001,12 +1380,41 @@ const App = () => {
             userLocation={userLocation}
             currentUserId={currentUserId}
             onVote={handleVote}
+            onReportBathroom={handleReportBathroom}
+            onReportReview={handleReportReview}
+            users={state.users}
+            isAdmin={isAdmin}
           />
           <AddReviewForm
             bathroomId={selectedBathroom.id}
             onAdded={handleReviewAdded}
+            currentUserId={currentUserId}
           />
         </div>
+      )}
+
+      {view === "profile" && currentUser && (
+        <ProfileView
+          user={currentUser}
+          stats={stats}
+          onNameChange={handleNameChange}
+          isAdmin={isAdmin}
+          onToggleAdmin={setIsAdmin}
+        />
+      )}
+
+      {view === "admin" && isAdmin && (
+        <AdminView
+          reports={state.reports}
+          bathrooms={state.bathrooms}
+          reviews={state.reviews}
+          users={state.users}
+          onHideBathroom={handleHideBathroom}
+          onUnhideBathroom={handleUnhideBathroom}
+          onHideReview={handleHideReview}
+          onUnhideReview={handleUnhideReview}
+          onResolve={handleResolveReport}
+        />
       )}
     </div>
   );
