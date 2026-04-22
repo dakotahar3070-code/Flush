@@ -120,6 +120,41 @@ const addReview = (newReview, photoDataUrls) => {
   saveState(state);
 };
 
+// ===== Voting Logic =====
+
+const getVotesForReview = (reviewId, votes) =>
+  votes.filter((v) => v.reviewId === reviewId);
+
+const calculateVoteScore = (reviewId, votes) =>
+  getVotesForReview(reviewId, votes).reduce((sum, v) => sum + v.value, 0);
+
+const getUserVote = (reviewId, userId, votes) =>
+  votes.find((v) => v.reviewId === reviewId && v.userId === userId);
+
+const addVote = (reviewId, userId, value) => {
+  const state = loadState();
+  const existing = getUserVote(reviewId, userId, state.votes);
+
+  if (existing) {
+    if (existing.value === value) {
+      state.votes = state.votes.filter((v) => v.id !== existing.id);
+    } else {
+      existing.value = value;
+      existing.createdAt = new Date().toISOString();
+    }
+  } else {
+    state.votes.push({
+      id: generateId(),
+      reviewId,
+      userId,
+      value,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  saveState(state);
+};
+
 // ===== Utilities =====
 
 // Haversine distance in miles
@@ -139,8 +174,8 @@ const distanceMiles = (lat1, lng1, lat2, lng2) => {
 };
 
 // Simple normalized map space (NYC-ish bounds)
-const MAP_LAT_RANGE = { min: 40.700, max: 40.800 };
-const MAP_LNG_RANGE = { min: -74.000, max: -73.900 };
+const MAP_LAT_RANGE = { min: 40.7, max: 40.8 };
+const MAP_LNG_RANGE = { min: -74.0, max: -73.9 };
 
 const normalizeCoordinates = (lat, lng) => {
   const x =
@@ -189,7 +224,6 @@ const MapView = ({ bathrooms, userLocation, onSelect }) => {
         <div
           style={{
             position: "absolute",
-            ...normalizeCoordinates(userLocation.lat, userLocation.lng),
             top: `${normalizeCoordinates(userLocation.lat, userLocation.lng).y}%`,
             left: `${normalizeCoordinates(userLocation.lat, userLocation.lng).x}%`,
             width: 14,
@@ -283,7 +317,6 @@ const BathroomCard = ({ bathroom, reviews, photos, userLocation, onSelect }) => 
 
   return (
     <div
-      className="bathroom-card"
       onClick={() => onSelect(bathroom)}
       style={{
         border: "1px solid #ccc",
@@ -502,21 +535,60 @@ const PhotoUploader = ({ onFilesChange, maxCount = 5 }) => {
   );
 };
 
-const ReviewList = ({ reviews, photos }) => {
+const ReviewList = ({
+  reviews,
+  photos,
+  votes,
+  currentUserId,
+  onVote,
+}) => {
   if (reviews.length === 0) return <p>No reviews yet.</p>;
 
   return (
     <ul style={{ paddingLeft: 16 }}>
       {reviews.map((r) => {
         const reviewPhotos = photos.filter((p) => p.reviewId === r.id);
+        const score = calculateVoteScore(r.id, votes);
+        const userVote = getUserVote(r.id, currentUserId, votes);
+
         return (
-          <li key={r.id} style={{ marginBottom: 12 }}>
+          <li key={r.id} style={{ marginBottom: 16, listStyle: "none" }}>
             <p>Overall: {r.overallRating}</p>
             <p>Cleanliness: {r.cleanlinessRating ?? "N/A"}</p>
             <p>Accessibility: {r.accessibilityRating ?? "N/A"}</p>
             <p>{r.text}</p>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <button
+                type="button"
+                onClick={() => onVote(r.id, 1)}
+                style={{
+                  color: userVote?.value === 1 ? "blue" : "inherit",
+                }}
+              >
+                👍 Upvote
+              </button>
+              <button
+                type="button"
+                onClick={() => onVote(r.id, -1)}
+                style={{
+                  color: userVote?.value === -1 ? "red" : "inherit",
+                }}
+              >
+                👎 Downvote
+              </button>
+              <span>
+                Helpful: {score >= 0 ? `+${score}` : score}
+              </span>
+            </div>
             {reviewPhotos.length > 0 && (
-              <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 6,
+                  marginTop: 6,
+                  flexWrap: "wrap",
+                }}
+              >
                 {reviewPhotos.map((p) => (
                   <img
                     key={p.id}
@@ -539,7 +611,15 @@ const ReviewList = ({ reviews, photos }) => {
   );
 };
 
-const BathroomDetail = ({ bathroom, reviews, photos, userLocation }) => {
+const BathroomDetail = ({
+  bathroom,
+  reviews,
+  photos,
+  votes,
+  userLocation,
+  currentUserId,
+  onVote,
+}) => {
   const bathroomReviews = reviews.filter((r) => r.bathroomId === bathroom.id);
   const bathroomPhotos = photos.filter((p) => p.bathroomId === bathroom.id);
 
@@ -589,7 +669,13 @@ const BathroomDetail = ({ bathroom, reviews, photos, userLocation }) => {
       <MiniMap lat={bathroom.lat} lng={bathroom.lng} />
 
       <h3 style={{ marginTop: 16 }}>Reviews</h3>
-      <ReviewList reviews={bathroomReviews} photos={photos} />
+      <ReviewList
+        reviews={bathroomReviews}
+        photos={photos}
+        votes={votes}
+        currentUserId={currentUserId}
+        onVote={onVote}
+      />
     </div>
   );
 };
@@ -784,12 +870,22 @@ const AddReviewForm = ({ bathroomId, onAdded }) => {
 
 // ===== App =====
 
+const getOrCreateCurrentUserId = () => {
+  let id = localStorage.getItem("currentUserId");
+  if (!id) {
+    id = "user_" + generateId();
+    localStorage.setItem("currentUserId", id);
+  }
+  return id;
+};
+
 const App = () => {
   const [state, setState] = useState(loadState());
   const [view, setView] = useState("list");
   const [selectedBathroom, setSelectedBathroom] = useState(null);
   const [userLocation, setUserLocation] = useState(null);
   const [locationError, setLocationError] = useState(null);
+  const [currentUserId] = useState(getOrCreateCurrentUserId);
 
   useEffect(() => {
     saveState(state);
@@ -830,6 +926,11 @@ const App = () => {
   };
 
   const handleReviewAdded = () => {
+    refresh();
+  };
+
+  const handleVote = (reviewId, value) => {
+    addVote(reviewId, currentUserId, value);
     refresh();
   };
 
@@ -896,7 +997,10 @@ const App = () => {
             bathroom={selectedBathroom}
             reviews={state.reviews}
             photos={state.photos}
+            votes={state.votes}
             userLocation={userLocation}
+            currentUserId={currentUserId}
+            onVote={handleVote}
           />
           <AddReviewForm
             bathroomId={selectedBathroom.id}
